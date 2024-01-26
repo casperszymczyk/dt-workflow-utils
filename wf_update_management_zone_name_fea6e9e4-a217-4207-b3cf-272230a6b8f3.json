@@ -1,0 +1,44 @@
+{
+  "id": "fea6e9e4-a217-4207-b3cf-272230a6b8f3",
+  "title": "Update Management Zone Name",
+  "description": "",
+  "tasks": {
+    "run_javascript_1": {
+      "name": "run_javascript_1",
+      "description": "Build a custom task running js Code",
+      "action": "dynatrace.automations:run-javascript",
+      "input": {
+        "script": "  // optional import of sdk modules\nimport { settingsObjectsClient } from \"@dynatrace-sdk/client-classic-environment-v2\";\nimport { execution } from '@dynatrace-sdk/automation-utils';\n\n\n\nvar objectList = []\nvar searchName\nvar newName\nvar objectID\nvar rules\nvar description\n\nexport default async function ({execution_id}) {\n  \n  const ex = await execution(execution_id);\n  searchName = ex.event().previous;\n  newName = ex.event().new;\n  console.log(ex.event.previous);\n  \n  let objectResponse = await importObjects();\n  objectID = search(objectResponse,searchName);\n\n  while (objectResponse.nextPageKey && objectID == null){\n  objectResponse = await importObjectsNextPage(objectResponse.nextPageKey);\n  objectID = search(objectResponse,searchName);\n  }\n  //console.log(objectResponse)\n  console.log(objectID)\n  if (objectID != null){\n  update(objectID, rules, description, newName)\n    }\n} \n\nasync function importObjects() {\nlet objects = await settingsObjectsClient.getSettingsObjects({\n  schemaIds: \"builtin:management-zones\"\n});\n  return objects;\n}\n\nasync function importObjectsNextPage(_nextPageKey) {\nlet objects = await settingsObjectsClient.getSettingsObjects({\n  nextPageKey: _nextPageKey\n});\n  return objects;\n}\n\nfunction search(objects, searchName){\n    for (var object in objects.items){\n      if (objects.items[object].value.name == searchName){\n        console.log(objects.items[object].value.name) \n        description = objects.items[object].value.description\n        rules = objects.items[object].value.rules\n        return objects.items[object].objectId\n        }\n      } \n}\n\nasync function update(_objectID, _rules, _description, _newName){\nvar response  = await settingsObjectsClient.putSettingsObjectByObjectId({\n  objectId: _objectID,\n  body: {\n    value: {\n      name: _newName,\n      description: _description,\n      rules: _rules\n      }\n  },\n});\n}"
+      },
+      "position": {
+        "x": 0,
+        "y": 1
+      },
+      "predecessors": []
+    }
+  },
+  "actor": "466904d3-c6f9-4ff9-a7ac-adce4f101727",
+  "owner": "466904d3-c6f9-4ff9-a7ac-adce4f101727",
+  "ownerType": "USER",
+  "isPrivate": true,
+  "trigger": {
+    "eventTrigger": {
+      "filterQuery": "event.kind == \"DAVIS_EVENT\" AND (matchesValue(event.name, \"Management Zone Change Event\"))",
+      "isActive": true,
+      "uniqueExpression": "{{ event()[\"event.id\"] }}-{{ event()[\"event.status\"] }}",
+      "triggerConfiguration": {
+        "type": "davis-event",
+        "value": {
+          "names": [
+            {
+              "name": "Management Zone Change Event",
+              "match": "equals"
+            }
+          ],
+          "onProblemClose": true
+        }
+      }
+    }
+  },
+  "schemaVersion": 3
+}

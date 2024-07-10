@@ -7,7 +7,7 @@
       "action": "dynatrace.automations:execute-dql-query",
       "description": "Executes DQL query",
       "input": {
-        "query": "fetch dt.entity.disk, from:now()-30d | limit 30000"
+        "query": "fetch dt.entity.disk, from:now()-30d | limit 200"
       },
       "active": true,
       "position": {
@@ -49,7 +49,7 @@
         ],
         "bcc": [],
         "taskId": "{{ task().id }}",
-        "content": "✨ Dynatrace Davis AI has predicted the following events::  \n\n{% for item in result(\"process_results_disk\") %}\n🔮 {{item}}\n{% endfor %}\n\n{% for item in result(\"process_results_service\") %}\n🔮 {{item}}\n{% endfor %}\n",
+        "content": "✨ Dynatrace Davis AI has predicted the following events:  \n\n{% for item in result(\"process_results_disk\") %}\n🔮 {{item}}\n{% endfor %}\n\n{% for item in result(\"process_results_service\") %}\n🔮 {{item}}\n{% endfor %}\n",
         "subject": "Dynatrace Davis AI Forecast",
         "executionId": "{{ execution().id }}",
         "environmentUrl": "https://ecd18863.apps.dynatrace.com"

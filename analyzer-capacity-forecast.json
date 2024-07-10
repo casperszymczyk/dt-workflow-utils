@@ -1,0 +1,155 @@
+{
+  "id": "bff77638-1a0a-483b-8aef-4c31207252eb",
+  "title": "Capacity Forecasting",
+  "tasks": {
+    "query_entities_disk": {
+      "name": "query_entities_disk",
+      "action": "dynatrace.automations:execute-dql-query",
+      "description": "Executes DQL query",
+      "input": {
+        "query": "fetch dt.entity.disk, from:now()-30d | limit (200)"
+      },
+      "active": true,
+      "position": {
+        "x": 0,
+        "y": 1
+      },
+      "predecessors": []
+    },
+    "process_results_disk": {
+      "name": "process_results_disk",
+      "action": "dynatrace.automations:run-javascript",
+      "description": "Build a custom task running js Code",
+      "input": {
+        "script": "\nimport { executionsClient } from '@dynatrace-sdk/client-automation';\n\nexport default async function ({ execution_id }) {\n  var summaryArray = []\n  \n  //get analysis summary from previous task\n  const summary = await executionsClient.getTaskExecutionResult({ executionId: execution_id, id: \"initiate_analysis_disk\" });\n\n  //convert analysis summary into human-readable strings\n  for (var violation in summary.violations){  \n    let description = 'Utilisation of disk ' + summary.violations[violation][\"disk.name\"] + ' (' +  summary.violations[violation][\"dt.entity.disk\"] + ') on host ' + summary.violations[violation][\"host.name\"] + ' is predicted to reach more than ' + summary.threshold + '% by ' + summary.violations[violation].timeframe.end;\n    summaryArray.push(description);\n  }\n  return summaryArray;\n}"
+      },
+      "active": true,
+      "position": {
+        "x": 0,
+        "y": 3
+      },
+      "predecessors": [
+        "initiate_analysis_disk"
+      ],
+      "conditions": {
+        "states": {
+          "initiate_analysis_disk": "OK"
+        },
+        "custom": "{{result(\"initiate_analysis_disk\").violation}}"
+      }
+    },
+    "send_report_plaintext": {
+      "name": "send_report_plaintext",
+      "action": "dynatrace.email:send-email",
+      "description": "Send email",
+      "input": {
+        "cc": [],
+        "to": [
+          "casper.szymczyk@dynatrace.com"
+        ],
+        "bcc": [],
+        "taskId": "{{ task().id }}",
+        "content": "Dynatrace Davis AI has predicted the following events to occur in the next 7 days:  \n\n{% for item in result(\"process_results_disk\") %}\n- {{item}}\n{% endfor %}\n\n{% for item in result(\"process_results_service\") %}\n- {{item}}\n{% endfor %}\n",
+        "subject": "Dynatrace Davis AI Forecast",
+        "executionId": "{{ execution().id }}",
+        "environmentUrl": "https://ecd18863.apps.dynatrace.com"
+      },
+      "active": true,
+      "position": {
+        "x": 0,
+        "y": 4
+      },
+      "predecessors": [
+        "process_results_disk",
+        "process_results_service"
+      ],
+      "conditions": {
+        "states": {
+          "process_results_disk": "OK",
+          "process_results_service": "OK"
+        }
+      }
+    },
+    "initiate_analysis_disk": {
+      "name": "initiate_analysis_disk",
+      "action": "dynatrace.automations:run-javascript",
+      "description": "Build a custom task running js Code",
+      "input": {
+        "script": "import {analyzersClient} from '@dynatrace-sdk/client-davis-analyzers';\nimport { execution } from '@dynatrace-sdk/automation-utils';\nimport { executionsClient } from '@dynatrace-sdk/client-automation';\n\nexport default async function ({ execution_id }) {\n\n  //forecast threshold\n  const THRESHOLD = 76;\n  \n  //metric query\n  const baseQuery = 'timeseries max(dt.host.disk.used.percent), by: {dt.entity.disk, dt.entity.host, host.name}, from:now()-30d, to:now(), filter: in (dt.entity.disk, array(';\n\n  //get entities to query\n  const entityList = await executionsClient.getTaskExecutionResult({ executionId: execution_id, id: \"query_entities_disk\" });\n\n  const predictionSummary = { violation: false, violations: new Array<Record<string, string>>() };\n  var analyzerResult = '';\n\n  let noElem = 0;\n  let queryString = '';\n\n  //batch entities, construct query and start analysis\n  for (var counter = 0; counter < entityList.records.length; counter++){\n    queryString += '\"' + entityList.records[counter].id + '\"';\n    noElem++;\n    if (noElem == 20 || counter == (entityList.records.length - 1)){\n     queryString += ')) | fieldsAdd disk.name = entityname(dt.entity.disk)';\n      //construct and execute the analyzer\n      const analyzerName = 'dt.statistics.GenericForecastAnalyzer'\n       const response = await analyzersClient.executeAnalyzer({\n        analyzerName,\n        body: {\n          timeSeriesData: {\n          expression: baseQuery + queryString,\n        },\n        forecastHorizon: 120\n    },\n  });\n      //if the analyzer has not finished executing yet, start polling\n      if (response.result.executionStatus !== \"COMPLETED\"){\n        analyzerResult = await poll(response);\n        findViolations(analyzerResult.result, THRESHOLD);\n      } \n      else findViolations(response.result, THRESHOLD);\n        noElem = 0;\n        queryString = '';\n      } \n    else {queryString += ','}\n   }\n  //append the threshold to the predction summary\n  predictionSummary.threshold = THRESHOLD;\n  return predictionSummary;\n\n\n////////////////////\n\nfunction findViolations(result) {\n    console.log(\"Total number of predicted lines: \" + result.output.length);\n    // check if prediction was successful.\n    if (result && result.executionStatus == 'COMPLETED') {\n        console.log('Prediction was successful.')\n        // check each predicted result, if it violates the threshold.\n        for (let i = 0; i < result.output.length; i++) {\n        const prediction = result.output[i];\n        // check if the prediction result is considered valid\n        if (prediction.analysisStatus == 'OK' && prediction.forecastQualityAssessment == 'VALID') {\n            const lowerPredictions = prediction.timeSeriesDataWithPredictions.records[0]['dt.davis.forecast:lower'];\n            const lastValue = lowerPredictions[lowerPredictions.length-1];\n            // check against the threshold\n            if (lastValue >= THRESHOLD) {\n            predictionSummary.violation = true;\n            // we need to remember all metric properties in the result,\n            // to inform the next actions\n            predictionSummary.violations.push(prediction.timeSeriesDataWithPredictions.records[0]);\n            }\n        }\n        }\n        console.log(predictionSummary.violations.length == 0 ? 'No violations found so far :)' : '' + predictionSummary.violations.length + ' capacity shortages were found so far!')\n        return predictionSummary;\n    } else {\n        console.log('Prediction run failed!');\n    }\n  }\n};\n\n  //polling function\n  async function poll(response){\n    let analyzerData = '';\n    do {\n      console.log(\"Checking if data is available yet...\")\n      const token = response.requestToken;\n      analyzerData = await analyzersClient.pollAnalyzerExecution({\n        analyzerName: 'dt.statistics.GenericForecastAnalyzer',\n        requestToken: token,\n      });\n    console.log('Status is ' + analyzerData.result.executionStatus);\n    } while (analyzerData.result.executionStatus !== \"COMPLETED\") //repeat until status is completed\n    return analyzerData;\n  }\n\n\n\n"
+      },
+      "active": true,
+      "position": {
+        "x": 0,
+        "y": 2
+      },
+      "predecessors": [
+        "query_entities_disk"
+      ],
+      "conditions": {
+        "states": {
+          "query_entities_disk": "OK"
+        }
+      }
+    },
+    "query_entities_service": {
+      "name": "query_entities_service",
+      "action": "dynatrace.automations:execute-dql-query",
+      "description": "Executes DQL query",
+      "input": {
+        "query": "fetch dt.entity.service, from:now()-30d | limit (2000)"
+      },
+      "position": {
+        "x": 1,
+        "y": 1
+      },
+      "predecessors": []
+    },
+    "process_results_service": {
+      "name": "process_results_service",
+      "action": "dynatrace.automations:run-javascript",
+      "description": "Build a custom task running js Code",
+      "input": {
+        "script": "// optional import of sdk modules\nimport { executionsClient } from '@dynatrace-sdk/client-automation';\n\nexport default async function ({ execution_id }) {\n  // your code goes here\n  // e.g. get the current execution\n  var summaryArray = []\n  const summary = await executionsClient.getTaskExecutionResult({ executionId: execution_id, id: \"initiate_analysis_service\" });\n  \n  for (var violation in summary.violations){  \n  let description = 'Failure rate of service ' + summary.violations[violation][\"service.name\"] + ' (' +  summary.violations[violation][\"dt.entity.service\"] + ') is predicted to reach more than ' + summary.threshold + '% by ' + summary.violations[violation].timeframe.end;\n  summaryArray.push(description);\n  }\n  return summaryArray;\n}"
+      },
+      "position": {
+        "x": 1,
+        "y": 3
+      },
+      "predecessors": [
+        "initiate_analysis_service"
+      ],
+      "conditions": {
+        "states": {
+          "initiate_analysis_service": "OK"
+        }
+      }
+    },
+    "initiate_analysis_service": {
+      "name": "initiate_analysis_service",
+      "action": "dynatrace.automations:run-javascript",
+      "description": "Build a custom task running js Code",
+      "input": {
+        "script": "import {analyzersClient} from '@dynatrace-sdk/client-davis-analyzers';\nimport { execution } from '@dynatrace-sdk/automation-utils';\nimport { executionsClient } from '@dynatrace-sdk/client-automation';\n\nexport default async function ({ execution_id }) {\n\nconst entityList = await executionsClient.getTaskExecutionResult({ executionId: execution_id, id: \"query_entities_service\" });\nconst predictionSummary = { violation: false, violations: new Array<Record<string, string>>() };\nconst THRESHOLD = 70;\nconst baseQuery = 'timeseries failed = sum(dt.service.request.failure_count, default: 0), all=sum(dt.service.request.count, default: 0), by: dt.entity.service, nonempty: true, from:now()-7d, to:now() | fieldsAdd service.name = entityName(dt.entity.service, type:\"dt.entity.service\") | fieldsAdd ratio = 100*if(all[]==0,0,else:failed[]/all[]) | fieldsRemove failed, all | filter in (dt.entity.service, array(';\nvar analyzerResult = '';\n\n  //console.log(entityList.records);\n  let noElem = 0;\n  let queryString = ''\n  for (var counter = 0; counter < entityList.records.length; counter++){\n    //console.log('current: ' + counter + ', total:' + (entityList.records.length-1));\n    queryString += '\"' + entityList.records[counter].id + '\"';\n    noElem++;\n    if (noElem == 20 || counter == (entityList.records.length - 1)){\n     queryString += '))'\n      //console.log(queryString)\n      const analyzerName = 'dt.statistics.GenericForecastAnalyzer'\n     const response = await analyzersClient.executeAnalyzer({\n      analyzerName,\n      body: {\n        timeSeriesData: {\n        expression: baseQuery + queryString,\n      },\n      forecastHorizon: 24\n    },\n  });\n      if (response.result.executionStatus !== \"COMPLETED\"){\n      analyzerResult = await poll(response);\n      //console.log(analyzerResult);\n      findViolations(analyzerResult.result, THRESHOLD);\n        } else findViolations(response.result, THRESHOLD);\n      noElem = 0;\n      queryString = '';\n    } else {queryString += ','}\n }\npredictionSummary.threshold = THRESHOLD;\nreturn predictionSummary;\n\n\n////////////////////\n\nfunction findViolations(result) {\n    //console.log(result)\n    console.log(\"Total number of predicted lines: \" + result.output.length);\n    // Check if prediction was successful.\n    if (result && result.executionStatus == 'COMPLETED') {\n        console.log('Prediction was successful.')\n        // Check each predicted result, if it violates the threshold.\n        for (let i = 0; i < result.output.length; i++) {\n        const prediction = result.output[i];\n        // Check if the prediction result is considered valid\n        if (prediction.analysisStatus == 'OK' && prediction.forecastQualityAssessment == 'VALID') {\n            const lowerPredictions = prediction.timeSeriesDataWithPredictions.records[0]['dt.davis.forecast:lower'];\n            const lastValue = lowerPredictions[lowerPredictions.length-1];\n            // check against the threshold\n            if (lastValue >= THRESHOLD) {\n            predictionSummary.violation = true;\n            // we need to remember all metric properties in the result,\n            // to inform the next actions which disk ran out of space\n            predictionSummary.violations.push(prediction.timeSeriesDataWithPredictions.records[0]);\n            }\n        }\n        }\n        console.log(predictionSummary.violations.length == 0 ? 'No violations found so far :)' : '' + predictionSummary.violations.length + ' capacity shortages were found so far!')\n        return predictionSummary;\n    } else {\n        console.log('Prediction run failed!');\n    }\n  }\n};\n\n\nasync function poll(response){\n  let analyzerData = '';\n  do {\n  console.log(\"Checking if data is available yet...\")\n  const token = response.requestToken;\n  analyzerData = await analyzersClient.pollAnalyzerExecution({\n  analyzerName: 'dt.statistics.GenericForecastAnalyzer',\n  requestToken: token,\n});\n    console.log('Status is ' + analyzerData.result.executionStatus);\n    } while (analyzerData.result.executionStatus !== \"COMPLETED\")\n  return analyzerData;\n  }\n\n\n\n"
+      },
+      "position": {
+        "x": 1,
+        "y": 2
+      },
+      "predecessors": [
+        "query_entities_service"
+      ],
+      "conditions": {
+        "states": {
+          "query_entities_service": "OK"
+        }
+      }
+    }
+  },
+  "description": "",
+  "actor": "466904d3-c6f9-4ff9-a7ac-adce4f101727",
+  "owner": "466904d3-c6f9-4ff9-a7ac-adce4f101727",
+  "ownerType": "USER",
+  "isPrivate": true,
+  "trigger": {},
+  "schemaVersion": 3
+}

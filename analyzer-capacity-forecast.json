@@ -53,7 +53,7 @@
         "content": "✨ Dynatrace Davis AI has predicted the following events:  \n\n{% for item in result(\"process_results_disk\") %}\n🔮 {{item}}\n{% endfor %}\n\n{% for item in result(\"process_results_service\") %}\n🔮 {{item}}\n{% endfor %}\n",
         "subject": "Dynatrace Davis AI Forecast",
         "executionId": "{{ execution().id }}",
-        "environmentUrl": "https://ecd18863.apps.dynatrace.com"
+        "environmentUrl": "https://xxxx.apps.dynatrace.com"
       },
       "active": true,
       "position": {
